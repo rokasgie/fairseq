@@ -9,6 +9,8 @@ import editdistance
 import os
 import sys
 import torch
+from pathlib import Path
+import random
 
 from fairseq.data import AddTargetDataset, Dictionary, FileAudioDataset, encoders
 from fairseq.data.data_utils import post_process
@@ -73,6 +75,13 @@ class AudioPretrainingTask(LegacyFairseqTask):
             help="extension of the label file to load, if any",
         )
 
+        parser.add_argument(
+            "--valid-perc",
+            type=float,
+            default=0.1,
+            help="Percentage of validation dataset",
+        )
+
         # Options for reporting WER metrics during validation. Only applicable to
         # Seq2Seq models during fine-tuning
         parser.add_argument(
@@ -116,9 +125,24 @@ class AudioPretrainingTask(LegacyFairseqTask):
         Args:
             split (str): name of the split (e.g., train, valid, test)
         """
-        manifest = os.path.join(self.args.data, "{}.tsv".format(split))
+
+        def read_files(path: Path):
+            data_files = list(path.glob('**/*.zip'))
+            data_files = filter(Path.is_file, data_files)
+            return list(data_files)
+
+        if len(self.dataset_files) == 0:
+            data_files = read_files(Path(self.args.data))
+            if len(data_files) == 0:
+                raise Exception("No data file found")
+
+            random.shuffle(data_files)
+            no_of_validation_datasets = max(1, int(len(data_files)*self.args.valid_perc))
+            self.dataset_files["valid"] = data_files[:no_of_validation_datasets]
+            self.dataset_files["train"] = data_files[no_of_validation_datasets:]
+
         self.datasets[split] = FileAudioDataset(
-            manifest,
+            self.dataset_files[split],
             sample_rate=self.args.sample_rate,
             max_sample_size=self.args.max_sample_size,
             min_sample_size=self.args.max_sample_size,
