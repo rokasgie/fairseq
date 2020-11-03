@@ -15,6 +15,7 @@ from typing import Optional
 import numpy as np
 import torch
 import torch.nn.functional as F
+from torchaudio.transforms import Resample
 
 from .. import FairseqDataset
 
@@ -194,6 +195,12 @@ class FileAudioDataset(RawAudioDataset):
         metadata: FileAudioDataset.AudioRecordMetadata = self.files[index]
         data = self.read_item(metadata.zip_name, metadata.zip_entry_name)
         wav, curr_sample_rate = sf.read(BytesIO(data))
+
+        if self.sample_rate != curr_sample_rate:
+            wav_tensor = torch.tensor(wav)
+            wav_tensor = Resample(curr_sample_rate, self.sample_rate)(wav_tensor)
+            wav = wav_tensor.numpy()
+
         feats = torch.from_numpy(wav).float()
         feats = self.postprocess(feats, curr_sample_rate)
         return {"id": index, "source": feats}
