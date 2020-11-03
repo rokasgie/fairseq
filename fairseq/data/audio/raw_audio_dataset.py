@@ -200,6 +200,7 @@ class FileAudioDataset(RawAudioDataset):
             wav_tensor = torch.tensor(wav)
             wav_tensor = Resample(curr_sample_rate, self.sample_rate)(wav_tensor)
             wav = wav_tensor.numpy()
+            curr_sample_rate = self.sample_rate
 
         feats = torch.from_numpy(wav).float()
         feats = self.postprocess(feats, curr_sample_rate)
