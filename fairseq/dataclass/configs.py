@@ -20,7 +20,7 @@ from fairseq.dataclass.constants import (
     ZERO_SHARDING_CHOICES,
 )
 
-from omegaconf import II
+from omegaconf import II, MISSING
 
 
 @dataclass
@@ -102,6 +102,12 @@ class CommonConfig(FairseqDataclass):
             "of running tensorboard (default: no tensorboard logging)"
         },
     )
+    wandb_project: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "Weights and Biases project name to use for logging"
+        },
+    )
     seed: int = field(
         default=1, metadata={"help": "pseudo random number generator seed"}
     )
@@ -167,6 +173,12 @@ class CommonConfig(FairseqDataclass):
     profile: bool = field(
         default=False, metadata={"help": "enable autograd profiler emit_nvtx"}
     )
+    reset_logging: bool = field(
+        default=True,
+        metadata={
+            "help": "when using Hydra, reset the logging at the beginning of training"
+        },
+    )
 
 
 @dataclass
@@ -202,7 +214,10 @@ class DistributedTrainingConfig(FairseqDataclass):
     )
     local_rank: int = field(
         default=0,
-        metadata={"help": "which GPU to use (usually configured automatically)"},
+        metadata={
+            "help": "which GPU to use (usually configured automatically)",
+            "argparse_alias": "--local_rank",
+        },
     )
     distributed_no_spawn: bool = field(
         default=False,
@@ -434,7 +449,7 @@ class OptimizationConfig(FairseqDataclass):
         },
     )
     clip_norm: float = field(
-        default=25.0, metadata={"help": "clip threshold of gradients"}
+        default=0.0, metadata={"help": "clip threshold of gradients"}
     )
     sentence_avg: bool = field(
         default=False,
@@ -775,7 +790,9 @@ class GenerationConfig(FairseqDataclass):
         default=False,
         metadata={"help": "Use dropout at inference time"},
     )
-    retain_dropout_modules: Optional[List[str]] = field(
+    # temporarily set to Any until https://github.com/facebookresearch/hydra/issues/1117 is fixed
+    # retain_dropout_modules: Optional[List[str]] = field(
+    retain_dropout_modules: Any = field(
         default=None,
         metadata={
             "help": "if set, only retain dropout for the specified modules; "
@@ -863,7 +880,7 @@ class InteractiveConfig(FairseqDataclass):
 
 
 @dataclass
-class FairseqConfig(object):
+class FairseqConfig(FairseqDataclass):
     common: CommonConfig = CommonConfig()
     common_eval: CommonEvalConfig = CommonEvalConfig()
     distributed_training: DistributedTrainingConfig = DistributedTrainingConfig()
@@ -874,3 +891,11 @@ class FairseqConfig(object):
     generation: GenerationConfig = GenerationConfig()
     eval_lm: EvalLMConfig = EvalLMConfig()
     interactive: InteractiveConfig = InteractiveConfig()
+    model: Any = MISSING
+    task: Any = None
+    criterion: Any = None
+    optimizer: Any = None
+    lr_scheduler: Any = None
+    scoring: Any = None
+    bpe: Any = None
+    tokenizer: Any = None
