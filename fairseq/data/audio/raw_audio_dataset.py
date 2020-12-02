@@ -180,8 +180,9 @@ class FileAudioDataset(RawAudioDataset):
                     entry = json.loads(line)
                     metadata = FileAudioDataset.AudioRecordMetadata(**entry)
                     metadata.zip_name = zip_filepath
-                    if self.min_length is not None and metadata.sample_count < self.min_length:
+                    if metadata.sample_count < self.min_length:
                         skipped += 1
+                        print(metadata.sample_count)
                     else:
                         files.append(metadata)
                         sizes.append(metadata.sample_count)
