@@ -249,6 +249,29 @@ class TestTranslation(unittest.TestCase):
                 )
                 generate_main(data_dir)
 
+    def test_transformer_with_activation_checkpointing(self):
+        with contextlib.redirect_stdout(StringIO()):
+            with tempfile.TemporaryDirectory("test_transformer_with_act_cpt") as data_dir:
+                create_dummy_data(data_dir)
+                preprocess_translation_data(data_dir)
+                train_translation_model(
+                    data_dir,
+                    "transformer_iwslt_de_en",
+                    [
+                        "--encoder-layers",
+                        "2",
+                        "--decoder-layers",
+                        "2",
+                        "--encoder-embed-dim",
+                        "8",
+                        "--decoder-embed-dim",
+                        "8",
+                        "--checkpoint-activations",
+                    ],
+                    run_validation=True,
+                )
+                generate_main(data_dir)
+
     def test_multilingual_transformer(self):
         # test with all combinations of encoder/decoder lang tokens
         encoder_langtok_flags = [
@@ -901,6 +924,38 @@ class TestTranslation(unittest.TestCase):
                     run_validation=True,
                 )
                 generate_main(data_dir)
+
+    def test_transformer_layerdrop(self):
+        with contextlib.redirect_stdout(StringIO()):
+            with tempfile.TemporaryDirectory("test_transformer_layerdrop") as data_dir:
+                create_dummy_data(data_dir)
+                preprocess_translation_data(data_dir)
+                train_translation_model(
+                    data_dir,
+                    "transformer_iwslt_de_en",
+                    [
+                        "--encoder-layers",
+                        "3",
+                        "--decoder-layers",
+                        "3",
+                        "--encoder-embed-dim",
+                        "8",
+                        "--decoder-embed-dim",
+                        "8",
+                        "--encoder-layerdrop",
+                        "0.01",
+                        "--decoder-layerdrop",
+                        "0.01",
+                    ],
+                )
+                generate_main(data_dir)
+                generate_main(
+                    data_dir,
+                    [
+                        "--model-overrides",
+                        "{'encoder_layers_to_keep':'0,2','decoder_layers_to_keep':'1'}"
+                    ],
+                )
 
 
 class TestStories(unittest.TestCase):
@@ -1671,72 +1726,6 @@ def eval_lm_main(data_dir, extra_flags=None):
         ] + (extra_flags or []),
     )
     eval_lm.main(eval_lm_args)
-
-
-def train_masked_language_model(data_dir, arch, extra_args=()):
-    train_parser = options.get_training_parser()
-    # TODO: langs should be in and out right?
-    train_args = options.parse_args_and_arch(
-        train_parser,
-        [
-            "--task",
-            "cross_lingual_lm",
-            data_dir,
-            "--arch",
-            arch,
-            # Optimizer args
-            "--optimizer",
-            "adam",
-            "--lr-scheduler",
-            "reduce_lr_on_plateau",
-            "--lr-shrink",
-            "0.5",
-            "--lr",
-            "0.0001",
-            "--min-lr",
-            "1e-09",
-            # dropout, attention args
-            "--dropout",
-            "0.1",
-            "--attention-dropout",
-            "0.1",
-            # MLM args
-            "--criterion",
-            "masked_lm_loss",
-            "--masked-lm-only",
-            "--monolingual-langs",
-            "in,out",
-            "--num-segment",
-            "5",
-            # Transformer args: use a small transformer model for fast training
-            "--encoder-layers",
-            "1",
-            "--encoder-embed-dim",
-            "32",
-            "--encoder-attention-heads",
-            "1",
-            "--encoder-ffn-embed-dim",
-            "32",
-            # Other training args
-            "--max-tokens",
-            "500",
-            "--tokens-per-sample",
-            "500",
-            "--save-dir",
-            data_dir,
-            "--max-epoch",
-            "1",
-            "--no-progress-bar",
-            "--distributed-world-size",
-            "1",
-            "--dataset-impl",
-            "raw",
-            "--num-workers",
-            "0",
-        ]
-        + list(extra_args),
-    )
-    train.main(train_args)
 
 
 if __name__ == "__main__":

@@ -218,8 +218,7 @@ def _override_attr(
             isinstance(val, str)
             and not val.startswith("${")  # not interpolation
             and field_type != str
-            and inspect.isclass(field_type)
-            and not issubclass(field_type, Enum)  # not choices enum
+            and (not inspect.isclass(field_type) or not issubclass(field_type, Enum))  # not choices enum
         ):
             # upgrade old models that stored complex parameters as string
             val = ast.literal_eval(val)
@@ -441,6 +440,7 @@ def overwrite_args_by_name(cfg: DictConfig, overrides: Dict[str, any]):
 def merge_with_parent(dc: FairseqDataclass, cfg: FairseqDataclass):
     dc_instance = DictConfig(dc)
     dc_instance.__dict__["_parent"] = cfg.__dict__["_parent"]
-    cfg = OmegaConf.merge(dc_instance, cfg)
+    with open_dict(dc_instance):
+        cfg = OmegaConf.merge(dc_instance, cfg)
     OmegaConf.set_struct(cfg, True)
     return cfg
