@@ -164,8 +164,8 @@ class AudioPretrainingTask(FairseqTask):
                 self.dataset_files["valid"] = data_files[:no_of_validation_datasets]
                 self.dataset_files["train"] = data_files[no_of_validation_datasets:]
 
-
-        print(split)
+        print("Creating {} dataset from {} batches".format(split,
+                                                           len(self.dataset_files[split])))
         self.datasets[split] = FileAudioDataset(
             self.dataset_files[split],
             sample_rate=task_cfg.sample_rate,

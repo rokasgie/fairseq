@@ -19,6 +19,9 @@ from torchaudio.transforms import Resample
 
 from .. import FairseqDataset
 
+import soundfile as sf
+from pydub import AudioSegment
+
 
 logger = logging.getLogger(__name__)
 
@@ -160,7 +163,7 @@ class FileAudioDataset(RawAudioDataset):
         self.sizes = []
         skipped = 0
         for zipped_batch in zipped_batches:
-            print(zipped_batch)
+            # print(zipped_batch)
             files, sizes, skips = self.read_manifest_metadata(zipped_batch)
             skipped += skips
             self.files.extend(files)
@@ -187,25 +190,44 @@ class FileAudioDataset(RawAudioDataset):
     def read_item(self, zip_file, name):
         with ZipFile(zip_file) as myzip:
             with myzip.open(name) as myfile:
-                wav = myfile.read()
-                return wav
+                data = myfile.read()
+                return data
 
     def __getitem__(self, index):
-        import soundfile as sf
-
         metadata: FileAudioDataset.AudioRecordMetadata = self.files[index]
         data = self.read_item(metadata.zip_name, metadata.zip_entry_name)
-        wav, curr_sample_rate = sf.read(BytesIO(data))
 
-        if self.sample_rate != curr_sample_rate:
+        if metadata.zip_entry_name.endswith(".wav"):
+            wav, sample_rate = self.read_wav(data)
+        elif metadata.zip_entry_name.endswith(".mp3"):
+            wav, sample_rate = self.read_mp3(data)
+        else:
+            raise ValueError(f"File extension for {name} was not recognized.")
+
+        if self.sample_rate != sample_rate:
             wav_tensor = torch.tensor(wav)
-            wav_tensor = Resample(curr_sample_rate, self.sample_rate)(wav_tensor)
+            wav_tensor = Resample(sample_rate, self.sample_rate)(wav_tensor)
             wav = wav_tensor.numpy()
             curr_sample_rate = self.sample_rate
 
         feats = torch.from_numpy(wav).float()
         feats = self.postprocess(feats, curr_sample_rate)
         return {"id": index, "source": feats}
+
+    def read_wav(self, bytes):
+        waveform, sample_rate = sf.read(BytesIO(bytes), dtype="float32", always_2d=True)
+        return waveform.mean(axis=1), sample_rate
+
+    def read_mp3(self, bytes, normalized=False):
+        """MP3 to numpy array"""
+        audio = AudioSegment.from_mp3(BytesIO(bytes))
+        audio = audio.set_channels(1)
+
+        y = np.array(audio.get_array_of_samples(), dtype=np.float32)
+        if normalized:
+            return y / 2 ** 15, audio.frame_rate, audio.duration_seconds
+        else:
+            return y, audio.frame_rate, audio.duration_seconds
 
     @dataclass()
     class AudioRecordMetadata:
