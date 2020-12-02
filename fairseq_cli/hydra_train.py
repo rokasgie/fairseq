@@ -8,6 +8,8 @@ import logging
 import os
 import sys
 
+import comet_ml
+
 from fairseq.dataclass.initialize import hydra_init
 from fairseq_cli.train import main as pre_main
 from fairseq import distributed_utils

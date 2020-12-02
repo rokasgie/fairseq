@@ -5,6 +5,8 @@
 # the root directory of this source tree. An additional grant of patent rights
 # can be found in the PATENTS file in the same directory.
 
+from comet_ml import Experiment
+
 import os
 import sys
 import torch
@@ -115,6 +117,15 @@ class AudioPretrainingTask(FairseqTask):
             assert cfg.labels is not None, "eval_wer can only be set during fine-tuning"
         self.blank_symbol = "<s>"
         self.dataset_files = {}
+
+        experiment = Experiment(api_key="fvtehLj4UVIpCNa0qRdSDgkYd",
+                                project_name="ino-voice-stt",
+                                workspace="aistis",
+                                auto_metric_logging=True,
+                                auto_param_logging=True,
+                                )
+        experiment.add_tag("unsupervised_pretraining")
+        experiment.set_name("unsupervised_pretraining_0")
 
     @classmethod
     def setup_task(cls, cfg: AudioPretrainingConfig, **kwargs):
