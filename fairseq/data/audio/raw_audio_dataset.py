@@ -182,7 +182,7 @@ class FileAudioDataset(RawAudioDataset):
                     metadata.zip_name = zip_filepath
                     if metadata.sample_count < self.min_length:
                         skipped += 1
-                        print(metadata.sample_count)
+                        print("SC: {}, SR: {}.format()".format(metadata.sample_count, metadata.sample_rate))
                     else:
                         files.append(metadata)
                         sizes.append(metadata.sample_count)
