@@ -225,9 +225,9 @@ class FileAudioDataset(RawAudioDataset):
 
         y = np.array(audio.get_array_of_samples(), dtype=np.float32)
         if normalized:
-            return y / 2 ** 15, audio.frame_rate, audio.duration_seconds
+            return y / 2 ** 15, audio.frame_rate
         else:
-            return y, audio.frame_rate, audio.duration_seconds
+            return y, audio.frame_rate
 
     @dataclass()
     class AudioRecordMetadata:
