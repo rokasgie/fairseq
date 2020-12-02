@@ -13,8 +13,8 @@ checkpoint:
 task:
   _name: audio_pretraining
   data: ???
-  max_sample_size: 250000
-  min_sample_size: 32000
+  max_sample_size: 352800
+  min_sample_size: 44100
 
 dataset:
   batch_size: 32
