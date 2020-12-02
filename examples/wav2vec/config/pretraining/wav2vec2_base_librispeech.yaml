@@ -17,6 +17,7 @@ task:
   min_sample_size: 32000
 
 dataset:
+  batch_size: 32
   num_workers: 6
   max_tokens: 1400000
   skip_invalid_size_inputs_valid_test: true
