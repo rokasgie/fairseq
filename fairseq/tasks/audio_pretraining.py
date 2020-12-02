@@ -23,6 +23,9 @@ from . import FairseqTask, register_task
 from .. import utils
 from ..logging import metrics
 
+import random
+from pathlib import Path
+
 
 class LabelEncoder(object):
     def __init__(self, dictionary):
@@ -40,6 +43,10 @@ class AudioPretrainingConfig(FairseqDataclass):
     labels: Optional[str] = field(
         default=None,
         metadata={"help": "extension of the label file to load, used for fine-tuning"},
+    )
+    valid_perc: float = field(
+        default=0.2,
+        metadata={"help": "validation percentage of all data"}
     )
     sample_rate: int = field(
         default=16_000,
@@ -107,6 +114,7 @@ class AudioPretrainingTask(FairseqTask):
         if cfg.eval_wer:
             assert cfg.labels is not None, "eval_wer can only be set during fine-tuning"
         self.blank_symbol = "<s>"
+        self.dataset_files = {}
 
     @classmethod
     def setup_task(cls, cfg: AudioPretrainingConfig, **kwargs):
@@ -133,9 +141,22 @@ class AudioPretrainingTask(FairseqTask):
             if not hasattr(task_cfg, "autoregressive"):
                 task_cfg.autoregressive = not task_cfg.criterion == 'ctc'
 
-        manifest = os.path.join(data_path, "{}.tsv".format(split))
+        if "valid" not in self.datasets.keys():
+            data_files = list(Path(data_path).glob('**/*.zip'))
+            data_files = list(filter(Path.is_file, data_files))
+
+            if len(data_files) == 0:
+                raise Exception("No data file found")
+            else:
+                random.shuffle(data_files)
+                no_of_validation_datasets = max(1, int(len(data_files) * self.cfg.valid_perc))
+                self.dataset_files["valid"] = data_files[:no_of_validation_datasets]
+                self.dataset_files["train"] = data_files[no_of_validation_datasets:]
+
+
+        print(split)
         self.datasets[split] = FileAudioDataset(
-            manifest,
+            self.dataset_files[split],
             sample_rate=task_cfg.sample_rate,
             max_sample_size=self.cfg.max_sample_size,
             min_sample_size=self.cfg.max_sample_size,

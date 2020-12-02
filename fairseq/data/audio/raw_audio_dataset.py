@@ -160,6 +160,7 @@ class FileAudioDataset(RawAudioDataset):
         self.sizes = []
         skipped = 0
         for zipped_batch in zipped_batches:
+            print(zipped_batch)
             files, sizes, skips = self.read_manifest_metadata(zipped_batch)
             skipped += skips
             self.files.extend(files)

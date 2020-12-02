@@ -22,7 +22,7 @@ dataset:
   skip_invalid_size_inputs_valid_test: true
 
 distributed_training:
-  distributed_world_size: 64
+  distributed_world_size: 1
   ddp_backend: no_c10d
 
 criterion:
