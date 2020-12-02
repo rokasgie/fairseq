@@ -201,6 +201,9 @@ class FileAudioDataset(RawAudioDataset):
             wav, sample_rate = self.read_wav(data)
         elif metadata.zip_entry_name.endswith(".mp3"):
             wav, sample_rate = self.read_mp3(data)
+            print(len(wav))
+            print(sample_rate)
+            print(metadata.zip_entry_name)
         else:
             raise ValueError(f"File extension for {name} was not recognized.")
 
