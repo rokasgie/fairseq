@@ -12,9 +12,9 @@ checkpoint:
 
 task:
   _name: audio_pretraining
-  data: ???
+  data: "/home/jupyter/data/unlabelled_1000h_dataset_zips"
   max_sample_size: 352800
-  min_sample_size: 44100
+  min_sample_size: 22050
 
 dataset:
   batch_size: 32
