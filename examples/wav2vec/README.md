@@ -137,8 +137,10 @@ Run the wav2vec_manifest.py inside fairseq/examples/wav2vec directory with this 
 
 ```
 python3 'examples/wav2vec/wav2vec_manifest.py' '/path/to/wav_file' --dest 'path/to/wav_manifest' --ext wav
+```
 it will create the train.tsv and valid.tsv in your wav_manifest directory.
 the start train to make pre-trainned model, by use the command in wav2vec README.md. i choose used the base model on 1 GPU, with command:
+```
 python3 fairseq/train.py path/to/wav_manifest \
 --save-dir path/to/w2v2_pre_train_model --fp16 --num-workers 128 --task audio_pretraining --criterion wav2vec --arch wav2vec2 \
 --log-keys '["prob_perplexity","code_perplexity","temp"]' --quantize-targets --extractor-mode default \
