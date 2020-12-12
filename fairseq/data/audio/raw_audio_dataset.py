@@ -11,17 +11,19 @@ from zipfile import ZipFile
 import json
 from dataclasses import dataclass, field
 from typing import Optional
+import re
+from num2words import num2words
+from pathlib import Path
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 from torchaudio.transforms import Resample
 
-from .. import FairseqDataset
+from fairseq.data.fairseq_dataset import FairseqDataset
 
 import soundfile as sf
 from pydub import AudioSegment
-
 
 logger = logging.getLogger(__name__)
 
@@ -174,18 +176,15 @@ class FileAudioDataset(RawAudioDataset):
         files = []
         sizes = []
         skipped = 0
-        with ZipFile(zip_filepath) as myzip:
-            with myzip.open('manifest.jsona') as lines:
-                for line in lines:
-                    entry = json.loads(line)
-                    metadata = FileAudioDataset.AudioRecordMetadata(**entry)
-                    metadata.zip_name = zip_filepath
-                    if metadata.sample_count < self.min_length:
-                        skipped += 1
-                        print("SC: {}, SR: {}.format()".format(metadata.sample_count, metadata.sample_rate))
-                    else:
-                        files.append(metadata)
-                        sizes.append(metadata.sample_count)
+        entries = read_manifest_metadata(zip_filepath)
+        for entry in entries:
+            if self.min_length is not None and entry.sample_count < self.min_length:
+                skipped += 1
+                # print("SC: {}, SR: {}.format()".format(metadata.sample_count, metadata.sample_rate))
+            else:
+                entry.text = complete_normalize(entry.text)
+                files.append(entry)
+                sizes.append(entry.sample_count)
         return files, sizes, skipped
 
     def read_item(self, zip_file, name):
@@ -206,16 +205,15 @@ class FileAudioDataset(RawAudioDataset):
             print(sample_rate)
             print(metadata.zip_entry_name)
         else:
-            raise ValueError(f"File extension for {name} was not recognized.")
+            raise ValueError(f"File extension for {metadata.zip_entry_name} was not recognized.")
 
         if self.sample_rate != sample_rate:
             wav_tensor = torch.tensor(wav)
             wav_tensor = Resample(sample_rate, self.sample_rate)(wav_tensor)
             wav = wav_tensor.numpy()
-            curr_sample_rate = self.sample_rate
 
         feats = torch.from_numpy(wav).float()
-        feats = self.postprocess(feats, curr_sample_rate)
+        feats = self.postprocess(feats, self.sample_rate)
         return {"id": index, "source": feats}
 
     def read_wav(self, bytes):
@@ -245,3 +243,50 @@ class FileAudioDataset(RawAudioDataset):
         seq_no: int
         format: Optional[str] = None
         zip_name: Optional[str] = None
+
+
+def replace_numbers(text):
+    numbers = re.findall('\d+', text)
+    for number in numbers:
+        num_as_word = num2words(number, lang='lt')
+        text = text.replace(number, num_as_word)
+    return text
+
+
+def remove_special_tokens(text):
+    text = text.lower()
+    special_tokens = {'_pauze', '_tyla', '_ikvepimas', '_iskvepimas'}
+    for tok in special_tokens:
+        text = text.replace(tok.lower(), '')
+    return text
+
+
+non_alpha_space_pattern = re.compile(r'([^\s\w]|_)+')
+
+
+def normalize_target_transcript(txt: str):
+    txt = txt.lower()
+    txt = txt.replace(".wav", "")
+    return txt
+
+
+def complete_normalize(txt: str):
+    txt = normalize_target_transcript(txt)
+    txt = remove_special_tokens(txt)
+    txt = replace_numbers(txt)
+    txt = non_alpha_space_pattern.sub("", txt)
+    txt = txt.strip()
+    return txt
+
+
+def read_manifest_metadata(zip_filepath):
+    audio_entries = []
+    with ZipFile(zip_filepath) as myzip:
+        with myzip.open('manifest.jsona') as lines:
+            for line in lines:
+                entry = json.loads(line)
+                metadata = FileAudioDataset.AudioRecordMetadata(**entry)
+                metadata.text = complete_normalize(metadata.text)
+                metadata.zip_name = str(zip_filepath)
+                audio_entries.append(metadata)
+    return audio_entries

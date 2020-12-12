@@ -6,6 +6,8 @@
 import os
 from collections import Counter
 from multiprocessing import Pool
+from zipfile import ZipFile
+import json
 
 import torch
 from fairseq import utils
@@ -13,6 +15,8 @@ from fairseq.binarizer import safe_readline
 from fairseq.data import data_utils
 from fairseq.file_io import PathManager
 from fairseq.tokenizer import tokenize_line
+
+from fairseq.data.audio.raw_audio_dataset import complete_normalize
 
 
 class Dictionary(object):
@@ -215,50 +219,74 @@ class Dictionary(object):
         d.add_from_file(f)
         return d
 
-    def add_from_file(self, f):
+    def add_from_file(self, files):
         """
         Loads a pre-existing dictionary from a text file and adds its symbols
         to this instance.
         """
-        if isinstance(f, str):
-            try:
-                with open(PathManager.get_local_path(f), "r", encoding="utf-8") as fd:
-                    self.add_from_file(fd)
-            except FileNotFoundError as fnfe:
-                raise fnfe
-            except UnicodeError:
-                raise Exception(
-                    "Incorrect encoding detected in {}, please "
-                    "rebuild the dataset".format(f)
-                )
-            return
 
-        lines = f.readlines()
-        indices_start_line = self._load_meta(lines)
+        dictionary = {}
+        for file in files:
+            with ZipFile(file) as myzip:
+                with myzip.open('manifest.jsona') as lines:
+                    for line in lines:
+                        entry = json.loads(line)
+                        text = complete_normalize(entry['text'])
+                        for c in list(text):
+                            if c != " ":
+                                if c not in dictionary.keys():
+                                    dictionary[c] = 1
+                                dictionary[c] += 1
 
-        for line in lines[indices_start_line:]:
-            try:
-                line, field = line.rstrip().rsplit(" ", 1)
-                if field == "#fairseq:overwrite":
-                    overwrite = True
-                    line, field = line.rsplit(" ", 1)
-                else:
-                    overwrite = False
-                count = int(field)
-                word = line
-                if word in self and not overwrite:
-                    raise RuntimeError(
-                        "Duplicate word found when loading Dictionary: '{}'. "
-                        "Duplicate words can overwrite earlier ones by adding the "
-                        "#fairseq:overwrite flag at the end of the corresponding row "
-                        "in the dictionary file. If using the Camembert model, please "
-                        "download an updated copy of the model file.".format(word)
-                    )
-                self.add_symbol(word, n=count, overwrite=overwrite)
-            except ValueError:
-                raise ValueError(
-                    "Incorrect dictionary format, expected '<token> <cnt> [flags]'"
-                )
+        # print(dictionary)
+        for k in dictionary.keys():
+            self.add_symbol(k, n=dictionary[k])
+
+
+    # def add_from_file(self, f):
+    #     """
+    #     Loads a pre-existing dictionary from a text file and adds its symbols
+    #     to this instance.
+    #     """
+    #     if isinstance(f, str):
+    #         try:
+    #             with open(PathManager.get_local_path(f), "r", encoding="utf-8") as fd:
+    #                 self.add_from_file(fd)
+    #         except FileNotFoundError as fnfe:
+    #             raise fnfe
+    #         except UnicodeError:
+    #             raise Exception(
+    #                 "Incorrect encoding detected in {}, please "
+    #                 "rebuild the dataset".format(f)
+    #             )
+    #         return
+    #
+    #     lines = f.readlines()
+    #     indices_start_line = self._load_meta(lines)
+    #
+    #     for line in lines[indices_start_line:]:
+    #         try:
+    #             line, field = line.rstrip().rsplit(" ", 1)
+    #             if field == "#fairseq:overwrite":
+    #                 overwrite = True
+    #                 line, field = line.rsplit(" ", 1)
+    #             else:
+    #                 overwrite = False
+    #             count = int(field)
+    #             word = line
+    #             if word in self and not overwrite:
+    #                 raise RuntimeError(
+    #                     "Duplicate word found when loading Dictionary: '{}'. "
+    #                     "Duplicate words can overwrite earlier ones by adding the "
+    #                     "#fairseq:overwrite flag at the end of the corresponding row "
+    #                     "in the dictionary file. If using the Camembert model, please "
+    #                     "download an updated copy of the model file.".format(word)
+    #                 )
+    #             self.add_symbol(word, n=count, overwrite=overwrite)
+    #         except ValueError:
+    #             raise ValueError(
+    #                 "Incorrect dictionary format, expected '<token> <cnt> [flags]'"
+    #             )
 
     def _save(self, f, kv_iterator):
         if isinstance(f, str):

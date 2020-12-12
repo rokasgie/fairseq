@@ -27,6 +27,7 @@ from ..logging import metrics
 
 import random
 from pathlib import Path
+from fairseq.data.audio.raw_audio_dataset import read_manifest_metadata
 
 
 class LabelEncoder(object):
@@ -51,7 +52,7 @@ class AudioPretrainingConfig(FairseqDataclass):
         metadata={"help": "validation percentage of all data"}
     )
     sample_rate: int = field(
-        default=16_000,
+        default=22050,
         metadata={
             "help": "target sample rate. audio files will be up/down sampled to this rate"
         },
@@ -109,23 +110,24 @@ class AudioPretrainingTask(FairseqTask):
         cfg: AudioPretrainingConfig,
         source_dictionary=None,
         target_dictionary=None,
+        dataset_files=None,
     ):
         super().__init__(cfg)
         self._target_dictionary = target_dictionary
         self._source_dictionary = source_dictionary
+        self.dataset_files = dataset_files
         if cfg.eval_wer:
             assert cfg.labels is not None, "eval_wer can only be set during fine-tuning"
         self.blank_symbol = "<s>"
-        self.dataset_files = {}
 
-        experiment = Experiment(api_key="fvtehLj4UVIpCNa0qRdSDgkYd",
-                                project_name="ino-voice-stt",
-                                workspace="aistis",
-                                auto_metric_logging=True,
-                                auto_param_logging=True,
-                                )
-        experiment.add_tag("unsupervised_pretraining")
-        experiment.set_name("unsupervised_pretraining_0")
+        # experiment = Experiment(api_key="fvtehLj4UVIpCNa0qRdSDgkYd",
+        #                         project_name="ino-voice-stt",
+        #                         workspace="aistis",
+        #                         auto_metric_logging=True,
+        #                         auto_param_logging=True,
+        #                         )
+        # experiment.add_tag("unsupervised_pretraining")
+        # experiment.set_name("unsupervised_pretraining_0")
 
     @classmethod
     def setup_task(cls, cfg: AudioPretrainingConfig, **kwargs):
@@ -135,13 +137,22 @@ class AudioPretrainingTask(FairseqTask):
             cfg (AudioPretrainingConfig): configuration of this task
         """
 
+        dataset_files = {}
         if cfg.labels:
-            dict_path = os.path.join(cfg.data, f"dict.{cfg.labels}.txt")
-            target_dictionary = Dictionary.load(dict_path)
+            data_files = list(Path(cfg.data).glob('**/*.zip'))
+            data_files = list(filter(Path.is_file, data_files))
+            if len(data_files) == 0:
+                raise Exception("No data file found")
+            else:
+                random.shuffle(data_files)
+                no_of_validation_datasets = max(1, int(len(data_files) * cfg.valid_perc))
+                dataset_files["valid"] = data_files[:no_of_validation_datasets]
+                dataset_files["train"] = data_files[no_of_validation_datasets:]
+            target_dictionary = Dictionary.load(dataset_files["train"])
         else:
             target_dictionary = None
 
-        return cls(cfg, target_dictionary=target_dictionary)
+        return cls(cfg, target_dictionary=target_dictionary, dataset_files=dataset_files)
 
     def load_dataset(self, split: str, task_cfg: FairseqDataclass = None, **kwargs):
         data_path = self.cfg.data
@@ -151,18 +162,6 @@ class AudioPretrainingTask(FairseqTask):
         if isinstance(task_cfg, Namespace):
             if not hasattr(task_cfg, "autoregressive"):
                 task_cfg.autoregressive = not task_cfg.criterion == 'ctc'
-
-        if "valid" not in self.datasets.keys():
-            data_files = list(Path(data_path).glob('**/*.zip'))
-            data_files = list(filter(Path.is_file, data_files))
-
-            if len(data_files) == 0:
-                raise Exception("No data file found")
-            else:
-                random.shuffle(data_files)
-                no_of_validation_datasets = max(1, int(len(data_files) * self.cfg.valid_perc))
-                self.dataset_files["valid"] = data_files[:no_of_validation_datasets]
-                self.dataset_files["train"] = data_files[no_of_validation_datasets:]
 
         print("Creating {} dataset from {} batches".format(split,
                                                            len(self.dataset_files[split])))
@@ -177,11 +176,13 @@ class AudioPretrainingTask(FairseqTask):
         )
 
         if task_cfg.labels:
-            label_path = os.path.join(data_path, f"{split}.{task_cfg.labels}")
-            labels = []
-            with open(label_path, "r") as f:
-                for line in f:
-                    labels.append(line)
+            # label_path = os.path.join(data_path, f"{split}.{task_cfg.labels}")
+            # print(label_path)
+            # labels = []
+            # with open(label_path, "r") as f:
+            #     for line in f:
+            #         labels.append(line)
+            labels = self.get_labels()
 
             process_label = LabelEncoder(self.target_dictionary)
 
@@ -194,6 +195,16 @@ class AudioPretrainingTask(FairseqTask):
                 process_label=process_label,
                 add_to_input=task_cfg.autoregressive,
             )
+
+    def get_labels(self):
+        labels = []
+        for k in self.datasets.keys():
+            for data_file in self.dataset_files[k]:
+                samples = read_manifest_metadata(data_file)
+                for sample in samples:
+                    transcription = sample.text
+                    labels.append(" ".join(list(transcription.replace(" ", "|"))) + " |")
+        return labels
 
     @property
     def source_dictionary(self):
