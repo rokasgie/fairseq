@@ -42,13 +42,13 @@ class AudioPretrainingConfig(FairseqDataclass):
         metadata={"help": "extension of the label file to load, used for fine-tuning"},
     )
     sample_rate: int = field(
-        default=16_000,
+        default=22050,
         metadata={
             "help": "target sample rate. audio files will be up/down sampled to this rate"
         },
     )
     normalize: bool = field(
-        default=False,
+        default=True,
         metadata={"help": "if set, normalizes input to have 0 mean and unit variance"},
     )
     enable_padding: bool = field(

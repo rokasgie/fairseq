@@ -11,15 +11,15 @@ checkpoint:
 
 task:
   _name: audio_pretraining
-  data: ???
-  normalize: false
+  data: /home/rokas/ino-voice/fairseq/manifests/curr
+  normalize: true
   labels: ltr
 
 dataset:
   num_workers: 6
   max_tokens: 3200000
   skip_invalid_size_inputs_valid_test: true
-  valid_subset: dev_other
+  valid_subset: valid
 
 distributed_training:
   ddp_backend: no_c10d
@@ -47,7 +47,7 @@ lr_scheduler:
 
 model:
   _name: wav2vec_ctc
-  w2v_path: ???
+  w2v_path: /home/rokas/ino-voice/data/models/xlsr_53_56k_adjusted.pt
   apply_mask: true
   mask_prob: 0.65
   mask_channel_prob: 0.5

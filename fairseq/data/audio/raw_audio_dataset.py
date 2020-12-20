@@ -5,12 +5,8 @@
 
 
 import logging
-from io import BytesIO
+import os
 import sys
-from zipfile import ZipFile
-import json
-from dataclasses import dataclass, field
-from typing import Optional
 
 import numpy as np
 import torch
@@ -18,6 +14,11 @@ import torch.nn.functional as F
 from torchaudio.transforms import Resample
 
 from .. import FairseqDataset
+
+from zipfile import ZipFile
+import soundfile as sf
+from pydub import AudioSegment
+from io import BytesIO
 
 
 logger = logging.getLogger(__name__)
@@ -54,11 +55,13 @@ class RawAudioDataset(FairseqDataset):
         return len(self.sizes)
 
     def postprocess(self, feats, curr_sample_rate):
+        if self.sample_rate != curr_sample_rate:
+            wav_tensor = torch.tensor(feats)
+            wav_tensor = Resample(curr_sample_rate, self.sample_rate)(wav_tensor)
+            # feats = wav_tensor.numpy()
+
         if feats.dim() == 2:
             feats = feats.mean(-1)
-
-        if curr_sample_rate != self.sample_rate:
-            raise Exception(f"sample rate: {curr_sample_rate}, need {self.sample_rate}")
 
         assert feats.dim() == 1, feats.dim()
 
@@ -138,7 +141,7 @@ class RawAudioDataset(FairseqDataset):
 class FileAudioDataset(RawAudioDataset):
     def __init__(
         self,
-        zipped_batches,
+        manifest_path,
         sample_rate,
         max_sample_size=None,
         min_sample_size=None,
@@ -156,65 +159,56 @@ class FileAudioDataset(RawAudioDataset):
             pad=pad,
             normalize=normalize,
         )
-        self.files = []
-        self.sizes = []
-        skipped = 0
-        for zipped_batch in zipped_batches:
-            files, sizes, skips = self.read_manifest_metadata(zipped_batch)
-            skipped += skips
-            self.files.extend(files)
-            self.sizes.extend(sizes)
-        logger.info(f"loaded {len(self.files)}, skipped {skipped} samples")
 
-    def read_manifest_metadata(self, zip_filepath):
-        files = []
-        sizes = []
-        skipped = 0
-        with ZipFile(zip_filepath) as myzip:
-            with myzip.open('manifest.jsona') as lines:
-                for line in lines:
-                    entry = json.loads(line)
-                    metadata = FileAudioDataset.AudioRecordMetadata(**entry)
-                    metadata.zip_name = zip_filepath
-                    if self.min_length is not None and metadata.sample_count < self.min_length:
-                        skipped += 1
-                    else:
-                        files.append(metadata)
-                        sizes.append(metadata.sample_count)
-        return files, sizes, skipped
+        self.fnames = []
 
-    def read_item(self, zip_file, name):
-        with ZipFile(zip_file) as myzip:
-            with myzip.open(name) as myfile:
-                wav = myfile.read()
-                return wav
+        skipped = 0
+        with open(manifest_path, "r") as f:
+            self.root_dir = f.readline().strip()
+            for line in f:
+                items = line.strip().split("\t")
+                # Format: zip_file, file_name, sample_count
+                assert len(items) == 3, line
+                sz = int(items[-1])
+                if min_length is not None and sz < min_length:
+                    skipped += 1
+                    continue
+                # Format: (zip_file, file_name)
+                self.fnames.append((items[0], items[1]))
+                self.sizes.append(sz)
+        logger.info(f"loaded {len(self.fnames)}, skipped {skipped} samples")
 
     def __getitem__(self, index):
-        import soundfile as sf
+        zip_file = os.path.join(self.root_dir, self.fnames[index][0])
+        fname = self.fnames[index][1]
 
-        metadata: FileAudioDataset.AudioRecordMetadata = self.files[index]
-        data = self.read_item(metadata.zip_name, metadata.zip_entry_name)
-        wav, curr_sample_rate = sf.read(BytesIO(data))
+        with ZipFile(zip_file) as myzip:
+            with myzip.open(fname) as myfile:
+                wav = myfile.read()
 
-        if self.sample_rate != curr_sample_rate:
-            wav_tensor = torch.tensor(wav)
-            wav_tensor = Resample(curr_sample_rate, self.sample_rate)(wav_tensor)
-            wav = wav_tensor.numpy()
-            curr_sample_rate = self.sample_rate
+        if fname.endswith(".wav"):
+            waveform, sample_rate = self.read_wav(wav)
+        elif fname.endswith(".mp3"):
+            waveform, sample_rate = self.read_mp3(wav)
+        else:
+            raise ValueError(f"File extension for {fname} was not recognized.")
 
-        feats = torch.from_numpy(wav).float()
-        feats = self.postprocess(feats, curr_sample_rate)
+        # wav, curr_sample_rate = sf.read(fname)
+        feats = torch.from_numpy(waveform).float()
+        feats = self.postprocess(feats, sample_rate)
         return {"id": index, "source": feats}
 
-    @dataclass()
-    class AudioRecordMetadata:
-        text: str
-        zip_entry_name: str
-        sample_rate: int
-        sample_count: int
-        id: str
-        group: str
-        batch: int
-        seq_no: int
-        format: Optional[str] = None
-        zip_name: Optional[str] = None
+    def read_wav(self, bytes):
+        waveform, sample_rate = sf.read(BytesIO(bytes), dtype="float32")
+        return waveform, sample_rate
+
+    def read_mp3(self, bytes, normalized=False):
+        """MP3 to numpy array"""
+        audio = AudioSegment.from_mp3(BytesIO(bytes))
+        audio = audio.set_channels(1)
+
+        y = np.array(audio.get_array_of_samples(), dtype=np.float32)
+        if normalized:
+            return y / 2 ** 15, audio.frame_rate, audio.duration_seconds
+        else:
+            return y, audio.frame_rate, audio.duration_seconds
