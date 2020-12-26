@@ -1,0 +1,15 @@
+python examples/speech_recognition/infer.py  /home/rokas/manifests \
+--task audio_pretraining \
+--nbest 1 \
+--path /home/jupyter/ino-voice/models/finetuned/checkpoint_best.pt \
+--gen-subset valid \
+--results-path /home/rokas/fairseq/results \
+--w2l-decoder kenlm \
+--lm-model /home/jupyter/ino-voice/lm/bin/full_3.bin \
+--lm-weight 2 \
+--word-score -1 \
+--sil-weight 0 \
+--criterion ctc \
+--labels ltr \
+--max-tokens 4000000 \
+--post-process letter

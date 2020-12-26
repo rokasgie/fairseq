@@ -4,36 +4,42 @@ common:
   fp16: true
   log_format: json
   log_interval: 200
+  #empty_cache_freq: 1
 
 checkpoint:
   no_epoch_checkpoints: true
   best_checkpoint_metric: wer
+  save_dir: /home/jupyter/ino-voice/models/finetuned
 
 task:
   _name: audio_pretraining
-  data: /home/rokas/ino-voice/fairseq/manifests/curr
+  data: /home/rokas/manifests 
   normalize: true
   labels: ltr
+  #max_sample_size: 88200
 
 dataset:
   num_workers: 6
-  max_tokens: 3200000
+  #max_tokens: 3200000
+  max_tokens: 800000
   skip_invalid_size_inputs_valid_test: true
   valid_subset: valid
+  batch_size: 8
 
 distributed_training:
   ddp_backend: no_c10d
-  distributed_world_size: 2
+  distributed_world_size: 1
 
 criterion:
   _name: ctc
   zero_infinity: true
+  #wer_args: '("/home/jupyter/ino-voice/lm/bin", "/home/rokas/manifests/lexicon.txt", 2, -1)'
 
 optimization:
   max_update: 80000
   lr: [0.00003]
   sentence_avg: true
-  update_freq: [4]
+  update_freq: [8]
 
 optimizer:
   _name: adam
@@ -47,7 +53,7 @@ lr_scheduler:
 
 model:
   _name: wav2vec_ctc
-  w2v_path: /home/rokas/ino-voice/data/models/xlsr_53_56k_adjusted.pt
+  w2v_path: /home/jupyter/ino-voice/models/pretrained/xlsr_53_56k_adjusted.pt
   apply_mask: true
   mask_prob: 0.65
   mask_channel_prob: 0.5
