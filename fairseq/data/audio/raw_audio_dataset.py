@@ -56,9 +56,9 @@ class RawAudioDataset(FairseqDataset):
 
     def postprocess(self, feats, curr_sample_rate):
         if self.sample_rate != curr_sample_rate:
-            wav_tensor = torch.tensor(feats)
+            wav_tensor = feats.clone().detach()
             wav_tensor = Resample(curr_sample_rate, self.sample_rate)(wav_tensor)
-            # feats = wav_tensor.numpy()
+            feats = wav_tensor.numpy()
 
         if feats.dim() == 2:
             feats = feats.mean(-1)
