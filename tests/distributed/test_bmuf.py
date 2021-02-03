@@ -4,14 +4,17 @@
 # LICENSE file in the root directory of this source tree.
 
 import argparse
+import functools
 import random
 import unittest
 from multiprocessing import Manager
 
 import torch
 import torch.nn as nn
-from fairseq import distributed_utils, optim
+from fairseq import optim
+from fairseq.distributed import utils as distributed_utils
 from omegaconf import OmegaConf
+
 
 class Model(nn.Module):
     def __init__(self, input_size, output_size):
@@ -141,16 +144,12 @@ class TestBMUF(unittest.TestCase):
     def bmuf_process(self, cfg, args, iterations):
         processes = []
         results = Manager().dict()
-        ctx = torch.multiprocessing.get_context("spawn")
-        for rank in range(args.distributed_world_size):
-            p = ctx.Process(
-                target=single_gpu_training, args=(cfg, args, rank, iterations, results)
-            )
-            p.start()
-            processes.append(p)
-
-        for p in processes:
-            p.join()
+        torch.multiprocessing.spawn(
+            fn=functools.partial(single_gpu_training, cfg, args),
+            args=(iterations, results),
+            nprocs=args.distributed_world_size,
+            join=True,
+        )
         return results
 
     def test_bmuf_sync(self):

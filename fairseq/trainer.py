@@ -16,9 +16,10 @@ from itertools import chain
 from typing import Any, Dict, List
 
 import torch
-from fairseq import checkpoint_utils, distributed_utils, models, optim, utils
+from fairseq import checkpoint_utils, models, optim, utils
 from fairseq.dataclass.configs import FairseqConfig
 from fairseq.dataclass.utils import convert_namespace_to_omegaconf
+from fairseq.distributed import utils as distributed_utils
 from fairseq.file_io import PathManager
 from fairseq.logging import meters, metrics
 from fairseq.nan_detector import NanDetector
@@ -69,7 +70,12 @@ class Trainer(object):
         elif cfg.common.bf16:
             self._criterion = self._criterion.to(dtype=torch.bfloat16)
             self._model = self._model.to(dtype=torch.bfloat16)
-        if not cfg.distributed_training.pipeline_model_parallel:
+        if (
+            not cfg.distributed_training.pipeline_model_parallel
+            # the DistributedFairseqModel wrapper will handle moving to device,
+            # so only handle cases which don't use the wrapper
+            and not self.use_distributed_wrapper
+        ):
             self._criterion = self._criterion.to(device=self.device)
             self._model = self._model.to(device=self.device)
         self.pipeline_model_parallel = cfg.distributed_training.pipeline_model_parallel
@@ -159,17 +165,24 @@ class Trainer(object):
         return self.data_parallel_rank == 0
 
     @property
+    def use_distributed_wrapper(self) -> bool:
+        return (
+            self.data_parallel_world_size > 1
+            and not self.cfg.optimization.use_bmuf
+        )
+
+    @property
     def criterion(self):
         if self._wrapped_criterion is None:
             if (
                 utils.has_parameters(self._criterion)
-                and self.data_parallel_world_size > 1
-                and not self.cfg.optimization.use_bmuf
+                and self.use_distributed_wrapper
             ):
                 self._wrapped_criterion = models.DistributedFairseqModel(
                     self.cfg.distributed_training,
                     self._criterion,
                     process_group=self.data_parallel_process_group,
+                    device=self.device,
                 )
             else:
                 self._wrapped_criterion = self._criterion
@@ -178,11 +191,12 @@ class Trainer(object):
     @property
     def model(self):
         if self._wrapped_model is None:
-            if self.data_parallel_world_size > 1 and not self.cfg.optimization.use_bmuf:
+            if self.use_distributed_wrapper:
                 self._wrapped_model = models.DistributedFairseqModel(
                     self.cfg.distributed_training,
                     self._model,
                     process_group=self.data_parallel_process_group,
+                    device=self.device,
                 )
             else:
                 self._wrapped_model = self._model
@@ -263,17 +277,13 @@ class Trainer(object):
     def save_checkpoint(self, filename, extra_state):
         """Save all training state in a checkpoint file."""
         if self.is_data_parallel_master:  # only save one checkpoint
-            logger.info(
-                f"Preparing to save checkpoint to {filename} after "
-                f"{self.get_num_updates()} updates"
-            )
             extra_state["metrics"] = metrics.state_dict()
             extra_state["previous_training_time"] = self.cumulative_training_time()
             checkpoint_utils.save_state(
                 filename,
                 self.cfg,
-                self.get_model().state_dict(),
-                self.get_criterion(),
+                self.model.state_dict(),
+                self.criterion,
                 self.optimizer,
                 self.lr_scheduler,
                 self.get_num_updates(),
@@ -297,6 +307,8 @@ class Trainer(object):
         """
         extra_state, self._optim_history, last_optim_state = None, [], None
 
+        logger.info(f"Preparing to load checkpoint {filename}")
+        is_distributed = self.data_parallel_world_size > 1
         bexists = PathManager.isfile(filename)
         if bexists:
             load_on_all_ranks = (
@@ -307,7 +319,9 @@ class Trainer(object):
             )
 
             if load_on_all_ranks or self.data_parallel_rank == 0:
-                state = checkpoint_utils.load_checkpoint_to_cpu(filename)
+                state = checkpoint_utils.load_checkpoint_to_cpu(
+                    filename, load_on_all_ranks=load_on_all_ranks
+                )
                 last_optim_state = state.get("last_optimizer_state", None)
 
                 # If doing zero_sharding, do not broadcast global optimizer
@@ -317,14 +331,14 @@ class Trainer(object):
                     not load_on_all_ranks
                     and self.cfg.distributed_training.zero_sharding == "os"
                     and "last_optimizer_state" in state
-                    and self.data_parallel_world_size > 1
+                    and is_distributed
                 ):
                     state["last_optimizer_state"] = "SHARDED"
             else:
                 last_optim_state = None
                 state = None
 
-            if self.data_parallel_world_size > 1 and not load_on_all_ranks:
+            if is_distributed and not load_on_all_ranks:
                 state = distributed_utils.broadcast_object(
                     state,
                     src_rank=0,
@@ -336,7 +350,7 @@ class Trainer(object):
 
             # load model parameters
             try:
-                self.get_model().load_state_dict(
+                self.model.load_state_dict(
                     state["model"], strict=True, model_cfg=self.cfg.model
                 )
                 if utils.has_parameters(self.get_criterion()):
@@ -367,7 +381,7 @@ class Trainer(object):
             if not reset_lr_scheduler:
                 self.lr_scheduler.load_state_dict(last_optim["lr_scheduler_state"])
 
-            if not load_on_all_ranks and self.data_parallel_world_size > 1:
+            if not load_on_all_ranks and is_distributed:
                 last_optim_state = self.optimizer.broadcast_global_state_dict(
                     last_optim_state
                 )
@@ -376,18 +390,18 @@ class Trainer(object):
             self.set_num_updates(last_optim["num_updates"])
 
         if extra_state is not None:
-            epoch = extra_state["train_iterator"]["epoch"]
-            logger.info(
-                "loaded checkpoint {} (epoch {} @ {} updates)".format(
-                    filename, epoch, self.get_num_updates()
-                )
-            )
+            itr_state = extra_state["train_iterator"]
+            epoch = itr_state["epoch"]
 
             if "previous_training_time" in extra_state:
                 self._previous_training_time = extra_state["previous_training_time"]
                 self._start_time = time.time()
 
             self.lr_step(epoch)
+
+            if itr_state["version"] >= 2 and itr_state["iterations_in_epoch"] == 0:
+                # reset meters at start of epoch
+                reset_meters = True
 
             if "metrics" in extra_state and not reset_meters:
                 metrics.load_state_dict(extra_state["metrics"])
@@ -396,8 +410,15 @@ class Trainer(object):
                 for meter in metrics.get_meters("default"):
                     if isinstance(meter, meters.TimeMeter):
                         meter.reset()
+
+            logger.info(
+                "Loaded checkpoint {} (epoch {} @ {} updates)".format(
+                    filename, epoch, self.get_num_updates()
+                )
+            )
+
         else:
-            logger.info("no existing checkpoint found {}".format(filename))
+            logger.info("No existing checkpoint found {}".format(filename))
 
         return extra_state
 
@@ -461,6 +482,9 @@ class Trainer(object):
             num_shards=self.data_parallel_world_size,
             shard_id=self.data_parallel_rank,
             num_workers=self.cfg.dataset.num_workers,
+            # always pass a fixed "epoch" to keep validation data consistent
+            # across training epochs
+            epoch=1,
             data_buffer_size=self.cfg.dataset.data_buffer_size,
             disable_iterator_cache=disable_iterator_cache,
         )
@@ -506,7 +530,7 @@ class Trainer(object):
 
         # forward and backward pass
         logging_outputs, sample_size, ooms = [], 0, 0
-        for i, sample in enumerate(samples):
+        for i, sample in enumerate(samples):  # delayed update loop
             sample, is_dummy_batch = self._prepare_sample(sample)
 
             def maybe_no_sync():
@@ -590,11 +614,7 @@ class Trainer(object):
                 ooms,
                 total_train_time,
             ) = self._aggregate_logging_outputs(
-                logging_outputs,
-                sample_size,
-                ooms,
-                train_time,
-                ignore=is_dummy_batch,
+                logging_outputs, sample_size, ooms, train_time, ignore=is_dummy_batch
             )
             self._cumulative_training_time = (
                 total_train_time / self.data_parallel_world_size
@@ -603,21 +623,29 @@ class Trainer(object):
         overflow = False
         try:
             with torch.autograd.profiler.record_function("reduce-grads"):
+                # reduce gradients across workers
                 self.optimizer.all_reduce_grads(self.model)
                 if utils.has_parameters(self.criterion):
                     self.optimizer.all_reduce_grads(self.criterion)
 
             with torch.autograd.profiler.record_function("multiply-grads"):
                 # multiply gradients by (data_parallel_size / sample_size) since
-                # DDP already normalizes by the number of data parallel workers.
+                # DDP normalizes by the number of data parallel workers for
+                # improved fp16 precision.
                 # Thus we get (sum_of_gradients / sample_size) at the end.
-                if not self.cfg.optimization.use_bmuf:
-                    self.optimizer.multiply_grads(
-                        self.data_parallel_world_size / sample_size
-                    )
-                elif sample_size > 0:  # BMUF needs to check sample size
-                    num = self.data_parallel_world_size if self._sync_stats() else 1
-                    self.optimizer.multiply_grads(num / sample_size)
+                # In case of fp16, this step also undoes loss scaling.
+                # (Debugging note: Some optimizers perform this scaling on the
+                # fly, so inspecting model.parameters() or optimizer.params may
+                # still show the original, unscaled gradients.)
+                numer = (
+                    self.data_parallel_world_size
+                    if not self.cfg.optimization.use_bmuf or self._sync_stats()
+                    else 1
+                )
+                self.optimizer.multiply_grads(numer / (sample_size or 1.0))
+                # Note: (sample_size or 1.0) handles the case of a zero gradient, in a
+                # way that avoids CPU/device transfers in case sample_size is a GPU or
+                # TPU object. The assumption is that the gradient itself is also 0.
 
             with torch.autograd.profiler.record_function("clip-grads"):
                 # clip grads
@@ -628,7 +656,7 @@ class Trainer(object):
             if not self.tpu:
                 if (
                     not self.cfg.optimization.use_bmuf
-                    and self.cfg.distributed_training.distributed_wrapper != "SlowMo"
+                    and self.cfg.distributed_training.ddp_backend != "slow_mo"
                 ):
                     self._check_grad_norms(grad_norm)
                 if not torch.isfinite(grad_norm).all():
@@ -659,7 +687,7 @@ class Trainer(object):
             raise
         except OverflowError as e:
             overflow = True
-            logger.info("NOTE: overflow detected, " + str(e))
+            logger.info(f"NOTE: gradient overflow detected, ignoring gradient, {str(e)}")
             grad_norm = torch.tensor(0.0).cuda()
             self.zero_grad()
         except RuntimeError as e:
@@ -668,7 +696,8 @@ class Trainer(object):
                 logger.error("OOM during optimization, irrecoverable")
             raise e
 
-        # Some distributed wrappers (e.g., SlowMo) need access to the optimizer after the step
+        # Some distributed wrappers (e.g., SlowMo) need access to the optimizer
+        # after the step
         if hasattr(self.model, "perform_additional_optimizer_actions"):
             if hasattr(self.optimizer, "fp32_params"):
                 self.model.perform_additional_optimizer_actions(
@@ -680,10 +709,7 @@ class Trainer(object):
                 )
 
         logging_output = None
-        if (
-            not overflow
-            or self.cfg.distributed_training.distributed_wrapper == "SlowMo"
-        ):
+        if not overflow or self.cfg.distributed_training.ddp_backend == "slow_mo":
             self.set_num_updates(self.get_num_updates() + 1)
 
             if self.tpu:
@@ -701,24 +727,14 @@ class Trainer(object):
                     gb_free = mem_info["kb_free"] / 1024 / 1024
                     gb_total = mem_info["kb_total"] / 1024 / 1024
                     metrics.log_scalar(
-                        "gb_free",
-                        gb_free,
-                        priority=1500,
-                        round=1,
-                        weight=0,
+                        "gb_free", gb_free, priority=1500, round=1, weight=0
                     )
                     metrics.log_scalar(
-                        "gb_total",
-                        gb_total,
-                        priority=1600,
-                        round=1,
-                        weight=0,
+                        "gb_total", gb_total, priority=1600, round=1, weight=0
                     )
 
                     logging_output = self._reduce_and_log_stats(
-                        logging_outputs,
-                        sample_size,
-                        grad_norm,
+                        logging_outputs, sample_size, grad_norm
                     )
 
                 # log whenever there's an XLA compilation, since these
@@ -726,11 +742,18 @@ class Trainer(object):
                 # optimization
                 self._check_xla_compilation()
             else:
+                if self.cuda and self.cuda_env is not None:
+                    # log minimum free memory over the iteration
+                    gb_used = torch.cuda.max_memory_allocated() / 1024 / 1024 / 1024
+                    torch.cuda.reset_peak_memory_stats()
+                    gb_free = self.cuda_env.total_memory_in_GB - gb_used
+                    metrics.log_scalar(
+                        "gb_free", gb_free, priority=1500, round=1, weight=0
+                    )
+
                 # log stats
                 logging_output = self._reduce_and_log_stats(
-                    logging_outputs,
-                    sample_size,
-                    grad_norm,
+                    logging_outputs, sample_size, grad_norm
                 )
 
                 # clear CUDA cache to reduce memory fragmentation
@@ -1102,7 +1125,7 @@ class Trainer(object):
                 # use FloatingPointError to trigger NanDetector
                 raise FloatingPointError(
                     "Fatal error: gradients are inconsistent between workers. "
-                    "Try --ddp-backend=no_c10d. "
+                    "Try --ddp-backend=legacy_ddp. "
                     "Or are you mixing up different generation of GPUs in training?"
                     + "\n"
                     + "-" * 80

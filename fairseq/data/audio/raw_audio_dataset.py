@@ -161,11 +161,12 @@ class FileAudioDataset(RawAudioDataset):
         )
 
         self.fnames = []
+        self.line_inds = set()
 
         skipped = 0
         with open(manifest_path, "r") as f:
             self.root_dir = f.readline().strip()
-            for line in f:
+            for i, line in enumerate(f):
                 items = line.strip().split("\t")
                 # Format: zip_file, file_name, sample_count
                 assert len(items) == 3, line

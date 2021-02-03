@@ -27,8 +27,8 @@ dataset:
   batch_size: 8
 
 distributed_training:
-  ddp_backend: no_c10d
-  distributed_world_size: 1
+  ddp_backend: legacy_ddp
+  distributed_world_size: 2
 
 criterion:
   _name: ctc

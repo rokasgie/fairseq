@@ -154,7 +154,7 @@ class FairseqTask(object):
                 )
             logger.warning(
                 (
-                    "{} samples have invalid sizes and will be skipped, "
+                    "{:,} samples have invalid sizes and will be skipped, "
                     "max_positions={}, first few sample ids={}"
                 ).format(len(ignored), max_positions, ignored[:10])
             )
@@ -280,8 +280,6 @@ class FairseqTask(object):
         from fairseq import models, quantization_utils
 
         model = models.build_model(cfg, self)
-        if getattr(cfg, "tpu", False):
-            model.prepare_for_tpu_()
         model = quantization_utils.quantize_model_scalar(model, cfg)
         return model
 
@@ -380,7 +378,7 @@ class FairseqTask(object):
         if seq_gen_cls is None:
             if getattr(args, "print_alignment", False):
                 seq_gen_cls = SequenceGeneratorWithAlignment
-                extra_gen_cls_kwargs['print_alignment'] = args.print_alignment
+                extra_gen_cls_kwargs["print_alignment"] = args.print_alignment
             else:
                 seq_gen_cls = SequenceGenerator
 
@@ -568,8 +566,6 @@ class LegacyFairseqTask(FairseqTask):
         from fairseq import models, quantization_utils
 
         model = models.build_model(args, self)
-        if getattr(args, "tpu", False):
-            model.prepare_for_tpu_()
         model = quantization_utils.quantize_model_scalar(model, args)
         return model
 
