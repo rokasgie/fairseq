@@ -3,28 +3,32 @@
 common:
   fp16: true
   log_format: json
-  log_interval: 200
+  log_interval: 400
 
 checkpoint:
+  save_dir: /home/jupyter/data/models/pretrained/xlsr-lt
   save_interval_updates: 25000
   keep_interval_updates: 1
-  no_epoch_checkpoints: true
+  no_epoch_checkpoints: false
+  reset_dataloader: true
 
 task:
   _name: audio_pretraining
-  data: ???
+  data: /home/rokas/fairseq/manifests
   max_sample_size: 320000
   min_sample_size: 32000
   normalize: true
 
 dataset:
-  num_workers: 6
-  max_tokens: 1200000
+  num_workers: 4
+  #max_tokens: 1200000
+  max_tokens: 500000
   skip_invalid_size_inputs_valid_test: true
+  batch_size: 8
 
 distributed_training:
-  distributed_world_size: 128
-  ddp_backend: no_c10d
+  distributed_world_size: 4
+  ddp_backend: legacy_ddp
 
 criterion:
   _name: wav2vec
@@ -35,6 +39,7 @@ criterion:
 optimization:
   max_update: 1000000
   lr: [0.005]
+  update_freq: [32]
 
 optimizer:
   _name: adam

@@ -123,12 +123,12 @@ You can specify the right config via the `--config-name` parameter.
 Note: you can simulate 24 GPUs by using k GPUs and adding command line parameters (before `--config-dir`)
 `distributed_training.distributed_world_size=k` `+optimization.update_freq='[x]'` where x = 24/k
 
-Decoding with a language model during training requires wav2letter [python bindings](https://github.com/facebookresearch/wav2letter/wiki/Building-Python-bindings).
+Decoding with a language model during training requires flashlight [python bindings](https://github.com/facebookresearch/flashlight/tree/master/bindings/python) (previously called [wav2letter](https://github.com/facebookresearch/wav2letter).
 If you want to use a language model, add `+criterion.wer_args='[/path/to/kenlm, /path/to/lexicon, 2, -1]'` to the command line.
 
 ### Evaluating a CTC model:
 
-Evaluating a CTC model with a language model requires wav2letter [python bindings](https://github.com/facebookresearch/wav2letter/wiki/Building-Python-bindings) to be installed.
+Evaluating a CTC model with a language model requires [flashlight python bindings](https://github.com/facebookresearch/flashlight/tree/master/bindings/python) (previously called [wav2letter](https://github.com/facebookresearch/wav2letter) to be installed.
 
 Fairseq transformer language model used in the wav2vec 2.0 paper can be obtained from the [wav2letter model repository](https://github.com/facebookresearch/wav2letter/tree/master/recipes/sota/2019).
 Be sure to upper-case the language model vocab after downloading it.
@@ -147,6 +147,35 @@ python examples/speech_recognition/infer.py /checkpoint/abaevski/data/speech/lib
 
 To get raw numbers, use --w2l-decoder viterbi and omit the lexicon. To use the transformer language model, use --w2l-decoder fairseqlm.
 
+## Use wav2vec 2.0 with 🤗Transformers:
+
+Wav2Vec2 is also available in the [🤗Transformers library](https://github.com/huggingface/transformers) since version 4.3.
+
+Pretrained Models can be found on the [hub](https://huggingface.co/models?filter=wav2vec2) 
+and documentation can be found [here](https://huggingface.co/transformers/master/model_doc/wav2vec2.html).
+
+Usage example:
+
+```python
+# !pip install transformers
+import soundfile as sf
+import torch
+from transformers import Wav2Vec2ForMaskedLM, Wav2Vec2Tokenizer
+
+# load pretrained model
+tokenizer = Wav2Vec2Tokenizer.from_pretrained("facebook/wav2vec2-base-960h")
+model = Wav2Vec2ForMaskedLM.from_pretrained("facebook/wav2vec2-base-960h")
+
+# load audio
+audio_input, _ = sf.read("path/to/audio/file")
+
+# transcribe
+input_values = tokenizer(audio_input, return_tensors="pt").input_values
+logits = model(input_values).logits
+predicted_ids = torch.argmax(logits, dim=-1)
+transcription = tokenizer.batch_decode(predicted_ids)[0]
+```
+
 # wav2vec
 
 Example to train a wav2vec model as described in [wav2vec: Unsupervised Pre-training for Speech Recognition (Schneider et al., 2019)](https://arxiv.org/abs/1904.05862).
@@ -162,8 +191,8 @@ Wav2Vec large | [Librispeech](http://www.openslr.org/12) | [download](https://dl
 import torch
 import fairseq
 
-cp = torch.load('/path/to/wav2vec.pt')
-model, cfg, task = fairseq.checkpoint_utils.load_model_ensemble_and_task([cp])
+cp_path = '/path/to/wav2vec.pt'
+model, cfg, task = fairseq.checkpoint_utils.load_model_ensemble_and_task([cp_path])
 model = model[0]
 model.eval()
 

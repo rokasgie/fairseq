@@ -13,7 +13,7 @@ checkpoint:
 
 task:
   _name: audio_pretraining
-  data: /home/rokas/manifests 
+  data: /home/rokas/fairseq/manifests 
   normalize: true
   labels: ltr
   #max_sample_size: 88200
@@ -27,8 +27,8 @@ dataset:
   batch_size: 8
 
 distributed_training:
-  ddp_backend: no_c10d
-  distributed_world_size: 1
+  ddp_backend: legacy_ddp
+  distributed_world_size: 4
 
 criterion:
   _name: ctc
@@ -53,7 +53,7 @@ lr_scheduler:
 
 model:
   _name: wav2vec_ctc
-  w2v_path: /home/jupyter/ino-voice/models/pretrained/xlsr_53_56k_adjusted.pt
+  w2v_path: /home/jupyter/data/models/pretrained/xlsr_53_56k_adjusted.pt
   apply_mask: true
   mask_prob: 0.65
   mask_channel_prob: 0.5

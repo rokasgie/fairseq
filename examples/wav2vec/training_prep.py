@@ -54,8 +54,9 @@ class AudioRecordMetadata:
     group: str
     batch: int
     seq_no: int
-    format: Optional[str] = None
-    zip_name: Optional[str] = None
+    bitrate: Optional[int] = ""
+    format: Optional[str] = "wav"
+    zip_name: Optional[str] = ""
 
 
 def get_parser():

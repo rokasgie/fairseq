@@ -11,7 +11,7 @@ import os
 import re
 import traceback
 from collections import OrderedDict
-from typing import Optional, Union
+from typing import Any, Dict, Optional, Union
 
 import torch
 from fairseq.dataclass.configs import CheckpointConfig, FairseqConfig
@@ -21,7 +21,7 @@ from fairseq.dataclass.utils import (
 )
 from fairseq.file_io import PathManager
 from fairseq.models import FairseqDecoder, FairseqEncoder
-from omegaconf import DictConfig, open_dict
+from omegaconf import Container, DictConfig, open_dict, OmegaConf
 
 
 logger = logging.getLogger(__name__)
@@ -47,15 +47,17 @@ def save_checkpoint(cfg: CheckpointConfig, trainer, epoch_itr, val_loss):
     if not trainer.is_data_parallel_master:
         return
 
-    def is_better(a, b):
-        return a >= b if cfg.maximize_best_checkpoint_metric else a <= b
-
     write_timer = meters.StopwatchMeter()
     write_timer.start()
 
     epoch = epoch_itr.epoch
     end_of_epoch = epoch_itr.end_of_epoch()
     updates = trainer.get_num_updates()
+
+    logger.info(f"Preparing to save checkpoint for epoch {epoch} @ {updates} updates")
+
+    def is_better(a, b):
+        return a >= b if cfg.maximize_best_checkpoint_metric else a <= b
 
     suffix = cfg.checkpoint_suffix or ""
     checkpoint_conds = collections.OrderedDict()
@@ -91,11 +93,21 @@ def save_checkpoint(cfg: CheckpointConfig, trainer, epoch_itr, val_loss):
     if len(checkpoints) > 0:
         trainer.save_checkpoint(checkpoints[0], extra_state)
         for cp in checkpoints[1:]:
-            PathManager.copy(checkpoints[0], cp, overwrite=True)
+            if cfg.write_checkpoints_asynchronously:
+                # TODO[ioPath]: Need to implement a delayed asynchronous
+                # file copying/moving feature.
+                logger.warning(
+                    f"ioPath is not copying {checkpoints[0]} to {cp} "
+                    "since async write mode is on."
+                )
+            else:
+                assert PathManager.copy(
+                    checkpoints[0], cp, overwrite=True
+                ), f"Failed to copy {checkpoints[0]} to {cp}"
 
         write_timer.stop()
         logger.info(
-            "saved checkpoint {} (epoch {} @ {} updates, score {}) (writing took {} seconds)".format(
+            "Saved checkpoint {} (epoch {} @ {} updates, score {}) (writing took {} seconds)".format(
                 checkpoints[0], epoch, updates, val_loss, write_timer.sum
             )
         )
@@ -222,9 +234,40 @@ def load_checkpoint(cfg: CheckpointConfig, trainer, **passthrough_args):
     return extra_state, epoch_itr
 
 
-def load_checkpoint_to_cpu(path, arg_overrides=None):
-    """Loads a checkpoint to CPU (with upgrading for backward compatibility)."""
-    with open(PathManager.get_local_path(path), "rb") as f:
+def load_checkpoint_to_cpu(path, arg_overrides=None, load_on_all_ranks=False):
+    """Loads a checkpoint to CPU (with upgrading for backward compatibility).
+
+    If doing single-GPU training or if the checkpoint is only being loaded by at
+    most one process on each node (current default behavior is for only rank 0
+    to read the checkpoint from disk), load_on_all_ranks should be False to
+    avoid errors from torch.distributed not having been initialized or
+    torch.distributed.barrier() hanging.
+
+    If all processes on each node may be loading the checkpoint
+    simultaneously, load_on_all_ranks should be set to True to avoid I/O
+    conflicts.
+
+    There's currently no support for > 1 but < all processes loading the
+    checkpoint on each node.
+    """
+    local_path = PathManager.get_local_path(path)
+    # The locally cached file returned by get_local_path() may be stale for
+    # remote files that are periodically updated/overwritten (ex:
+    # checkpoint_last.pt) - so we remove the local copy, sync across processes
+    # (if needed), and then download a fresh copy.
+    if local_path != path and PathManager.path_requires_pathmanager(path):
+        try:
+            os.remove(local_path)
+        except FileNotFoundError:
+            # With potentially multiple processes removing the same file, the
+            # file being missing is benign (missing_ok isn't available until
+            # Python 3.8).
+            pass
+        if load_on_all_ranks:
+            torch.distributed.barrier()
+        local_path = PathManager.get_local_path(path)
+
+    with open(local_path, "rb") as f:
         state = torch.load(f, map_location=torch.device("cpu"))
 
     if "args" in state and state["args"] is not None and arg_overrides is not None:
@@ -232,8 +275,22 @@ def load_checkpoint_to_cpu(path, arg_overrides=None):
         for arg_name, arg_val in arg_overrides.items():
             setattr(args, arg_name, arg_val)
 
-    if "cfg" in state and state["cfg"] is not None and arg_overrides is not None:
-        overwrite_args_by_name(state["cfg"], arg_overrides)
+    if "cfg" in state and state["cfg"] is not None:
+
+        # hack to be able to set Namespace in dict config. this should be removed when we update to newer
+        # omegaconf version that supports object flags, or when we migrate all existing models
+        from omegaconf import _utils
+
+        old_primitive = _utils.is_primitive_type
+        _utils.is_primitive_type = lambda _: True
+
+        state["cfg"] = OmegaConf.create(state["cfg"])
+
+        _utils.is_primitive_type = old_primitive
+        OmegaConf.set_struct(state["cfg"], True)
+
+        if arg_overrides is not None:
+            overwrite_args_by_name(state["cfg"], arg_overrides)
 
     state = _upgrade_state_dict(state)
     return state
@@ -241,7 +298,7 @@ def load_checkpoint_to_cpu(path, arg_overrides=None):
 
 def load_model_ensemble(
     filenames,
-    arg_overrides=None,
+    arg_overrides: Optional[Dict[str, Any]] = None,
     task=None,
     strict=True,
     suffix="",
@@ -273,7 +330,7 @@ def load_model_ensemble(
 
 def load_model_ensemble_and_task(
     filenames,
-    arg_overrides=None,
+    arg_overrides: Optional[Dict[str, Any]] = None,
     task=None,
     strict=True,
     suffix="",
@@ -314,6 +371,9 @@ def load_model_ensemble_and_task(
             if task is None:
                 task = tasks.setup_task(cfg.task)
 
+            if "task_state" in state:
+                task.load_state_dict(state["task_state"])
+
             # build model for ensemble
             model = task.build_model(cfg.model)
 
@@ -345,7 +405,23 @@ def checkpoint_paths(path, pattern=r"checkpoint(\d+)\.pt"):
     return [os.path.join(path, x[1]) for x in sorted(entries, reverse=True)]
 
 
-def torch_persistent_save(obj, f):
+def torch_persistent_save(cfg: CheckpointConfig, obj, filename):
+    if cfg.write_checkpoints_asynchronously:
+        with PathManager.opena(filename, "wb") as f:
+            _torch_persistent_save(obj, f)
+    else:
+        if PathManager.supports_rename(filename):
+            # do atomic save
+            with PathManager.open(filename + ".tmp", "wb") as f:
+                _torch_persistent_save(obj, f)
+            PathManager.rename(filename + ".tmp", filename)
+        else:
+            # fallback to non-atomic save
+            with PathManager.open(filename, "wb") as f:
+                _torch_persistent_save(obj, f)
+
+
+def _torch_persistent_save(obj, f):
     if isinstance(f, str):
         with PathManager.open(f, "wb") as h:
             torch_persistent_save(obj, h)
@@ -368,6 +444,7 @@ def save_state(
     num_updates,
     optim_history=None,
     extra_state=None,
+    task=None,
     **kwargs,
 ):
     from fairseq import utils
@@ -377,7 +454,7 @@ def save_state(
     if extra_state is None:
         extra_state = {}
     state_dict = {
-        "cfg": cfg,
+        "cfg": OmegaConf.to_container(cfg) if OmegaConf.is_config(cfg) else cfg,
         "args": kwargs.get("args", None),
         "model": model_state_dict or {},
         "optimizer_history": optim_history
@@ -390,6 +467,7 @@ def save_state(
             }
         ],
         "extra_state": extra_state,
+        "task_state": task.state_dict() if task is not None else {},
     }
     if utils.has_parameters(criterion):
         state_dict["criterion"] = criterion.state_dict()
@@ -408,8 +486,7 @@ def save_state(
     # keep everything on CPU
     state_dict = utils.move_to_cpu(state_dict)
 
-    with PathManager.open(filename, "wb") as f:
-        torch_persistent_save(state_dict, f)
+    torch_persistent_save(cfg.checkpoint, state_dict, filename)
 
 
 def _upgrade_state_dict(state):
@@ -451,6 +528,12 @@ def _upgrade_state_dict(state):
     # keep track of number of updates
     if "num_updates" not in state["optimizer_history"][-1]:
         state["optimizer_history"][-1]["num_updates"] = 0
+    # old model checkpoints may not have separate source/target positions
+    if hasattr(state["args"], "max_positions") and not hasattr(
+        state["args"], "max_source_positions"
+    ):
+        state["args"].max_source_positions = state["args"].max_positions
+        state["args"].max_target_positions = state["args"].max_positions
     # use stateful training data iterator
     if "train_iterator" not in state["extra_state"]:
         state["extra_state"]["train_iterator"] = {
@@ -481,30 +564,57 @@ def _upgrade_state_dict(state):
             state["args"].stop_min_lr = state["args"].min_lr
             del state["args"].min_lr
         # binary_cross_entropy => wav2vec criterion
-        if hasattr(state["args"], "criterion") and state["args"].criterion == "binary_cross_entropy":
+        if (
+            hasattr(state["args"], "criterion")
+            and state["args"].criterion == "binary_cross_entropy"
+        ):
             state["args"].criterion = "wav2vec"
         # speech_pretraining => audio pretraining
-        if hasattr(state["args"], "task") and state["args"].task == "speech_pretraining":
+        if (
+            hasattr(state["args"], "task")
+            and state["args"].task == "speech_pretraining"
+        ):
             state["args"].task = "audio_pretraining"
         # audio_cpc => wav2vec
         if hasattr(state["args"], "arch") and state["args"].arch == "audio_cpc":
             state["args"].arch = "wav2vec"
+        # convert legacy float learning rate to List[float]
+        if hasattr(state["args"], "lr") and isinstance(state["args"].lr, float):
+            state["args"].lr = [state["args"].lr]
+        # convert task data arg to a string instead of List[string]
+        if (
+            hasattr(state["args"], "data")
+            and isinstance(state["args"].data, list)
+            and len(state["args"].data) > 0
+        ):
+            state["args"].data = state["args"].data[0]
 
         state["cfg"] = convert_namespace_to_omegaconf(state["args"])
 
     if "cfg" in state and state["cfg"] is not None:
-        with open_dict(state["cfg"]):
-            if state["cfg"].task is not None:
-                # old model checkpoints may not have separate source/target positions
-                if hasattr(state["cfg"].task, "max_positions") and not hasattr(
-                    state["cfg"].task, "max_source_positions"
-                ):
-                    state["cfg"].task.max_source_positions = state[
-                        "cfg"
-                    ].task.max_positions
-                    state["cfg"].task.max_target_positions = state[
-                        "cfg"
-                    ].task.max_positions
+        cfg = state["cfg"]
+        with open_dict(cfg):
+            # any upgrades for Hydra-based configs
+            if (
+                "task" in cfg
+                and "eval_wer_config" in cfg.task
+                and isinstance(cfg.task.eval_wer_config.print_alignment, bool)
+            ):
+                cfg.task.eval_wer_config.print_alignment = "hard"
+            if "generation" in cfg and isinstance(cfg.generation.print_alignment, bool):
+                cfg.generation.print_alignment = "hard"
+            if (
+                "model" in cfg
+                and "w2v_args" in cfg.model
+                and cfg.model.w2v_args is not None
+                and (
+                    hasattr(cfg.model.w2v_args, "task") or "task" in cfg.model.w2v_args
+                )
+                and isinstance(
+                    cfg.model.w2v_args.task.eval_wer_config.print_alignment, bool
+                )
+            ):
+                cfg.model.w2v_args.task.eval_wer_config.print_alignment = "hard"
 
     return state
 
